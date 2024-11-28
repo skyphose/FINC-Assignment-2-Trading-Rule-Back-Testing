@@ -1,4 +1,4 @@
-# Function 3: Simulate Multiple DVI Thresholds
+# Simulate Multiple DVI Thresholds
 simulate_multiple_dvi_thresholds <- function(ticker, start_date, end_date, low_threshold, high_threshold, increment = 0.01) {
   # Create a sequence of DVI thresholds from low to high with the given increment
   dvi_thresholds <- seq(low_threshold, high_threshold, by = increment)
@@ -37,11 +37,16 @@ simulate_multiple_dvi_thresholds <- function(ticker, start_date, end_date, low_t
   }
   
   # Plot the results using ggplot2
-  ggplot(summary_df, aes(x = DVI_Threshold, y = Cumulative_Return)) +
+  plot <- ggplot(summary_df, aes(x = DVI_Threshold, y = Cumulative_Return)) +
     geom_line(color = "steelblue", size = 1) +
     geom_point(color = "red") +
+    # Add data labels to the points
+    geom_text(aes(label = round(Cumulative_Return, 4)), vjust = -0.5, color = "black", size = 3) +
     labs(title = "Cumulative Return vs DVI Threshold", x = "DVI Threshold", y = "Cumulative Return") +
     theme_minimal()
+  
+  # Explicitly print the plot to ensure it is displayed
+  print(plot)
   
   # Return the summary table
   return(summary_df)
