@@ -1,0 +1,284 @@
+## FINC 780: Trading Rule Back Testing
+## Group 5
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(quantmod)
+library(TTR)
+library(PerformanceAnalytics)
+library(ggplot2)
+```
+
+# Introduction
+In this report we will evaluate a trading strategy based on the use of the Dynamic Volatility Index (DVI) signal through back testing, and evaluation of performance in different given periods and thresholds. DVI is a measurement tool used in the stock market to aid traders in making strategic decisions when approaching the market.  DVI takes current volatility and compares it to the historical average volatility in a set given period. With this calculation, a trader can then identify if the market volatility is high or low.
+The use of this approach is based on behavioral finance principles, which seek to reduce biases such as aversion and herd behaviors, which can often have a negative impact on decision making.
+Behavioral finance is the explanation of how traders are influenced by psychological biases, which in turn influence their market decisions. As mentioned above, herding behaviors and loss aversion are a couple of behaviors seen. These can create inefficiencies in the market and drive the volatility to extremes at either end.
+Herding is seen when traders are basing their purchases by following the trends and are influenced primarily by what everyone else is doing. This leads to higher market volatility and creates price bubbles.
+Loss aversion is when investors avoid investments in attempting to avoid the losses. This in turn can lead to inefficiencies with providing and potentially under performance in those markets.
+DVI helps to mitigate loss aversion through buy/sell signals that are created based on predefined thresholds, which remove the opportunity for emotional influence. For example, if DVI is less than .5, the strategy may signal a long position, in turn encouraging the trader to buy. On the opposite end, when DVI is greater than or equal to .5, this would tell the traders it’s the right time to sell. Through this approach, there are set thresholds, removing emotional factors from the decisions.
+Another behavior seen, herding, is also controlled with DVI. With the use of DVI, data is smoothed, removing the short-term price fluctuations, with a focus more on long term trends. This helps curb the impulsive decision to follow the crowd. For example, one may set a DVI above 0.5 to signal one to buy, whereas a signal below 0.5 may signal one that they would be purchasing assets for lower than true value. With these thresholds, these set clear signals for when the market may favor a good purchase, rather than purchases through mainstream trends and pressure to buy.
+
+## Function 1: Base Level Backtest
+For our first function, we are building a base level back test. For input, we are going to prove four values: Ticker, start and end dates, as well as a DVI threshold. As part of this function we're going to include a function "get_stock_data" to pull stock information. 
+We're going to be including the usage of libraries quantmod, TTR, PerformanceAnalytics, and ggplot2. 
+This function is going to provide us two outputs: a graph and a table. In this graph we're going to be able to see the cumulative return, as well as in the table we'll see direct numbers including values such as total return, sharpe values, and drawdown. Now that we have this initial test written, we are going to build a function that can iterate on this idea and test with more than 1 set period. 
+
+```{r}
+# Stock data function
+get_stock_data <- function(ticker, start_date, end_date) {
+  getSymbols(ticker, src = "yahoo", from = start_date, to = end_date, auto.assign = FALSE)
+}
+# Function for Base Level Backtest
+base_level_backtest <- function(ticker, start_date, end_date, dvi_threshold = 0.5) {
+  # Load stock data
+  price_data <- get_stock_data(ticker, start_date, end_date)
+  # Extract closing prices
+  closes <- Cl(price_data)
+  # Calculate DVI (using RSI as a proxy)
+  dvi <- RSI(closes, n = 14) / 100  # Normalize RSI to [0,1]
+  # Create trading signals (1 for long, -1 for short, NA for no position)
+  signals <- ifelse(dvi > dvi_threshold, 1, -1)
+  signals[is.na(signals)] <- 0  # Replace NA with 0
+  # Calculate daily returns
+  daily_returns <- diff(log(closes))
+  # Calculate strategy returns (signals from previous day * today's returns)
+  strategy_returns <- lag(signals, 1) * daily_returns
+  strategy_returns[is.na(strategy_returns)] <- 0  # Replace NA with 0
+  # Calculate cumulative returns
+  cumulative_return <- prod(1 + as.numeric(strategy_returns), na.rm = TRUE) - 1
+  # Calculate additional performance metrics
+  sharpe_ratio <- mean(strategy_returns, na.rm = TRUE) / sd(strategy_returns, na.rm = TRUE) * sqrt(252)
+  max_drawdown <- maxDrawdown(strategy_returns)
+  # Create summary results
+  summary_results <- data.frame(
+    Ticker = ticker,
+    Start_Date = start_date,
+    End_Date = end_date,
+    DVI_Threshold = dvi_threshold,
+    Total_Return = cumulative_return,
+    Annualized_Sharpe = sharpe_ratio,
+    Max_Drawdown = as.numeric(max_drawdown)
+  )
+  # Create equity curve
+  cumulative_equity_curve <- cumprod(1 + as.numeric(strategy_returns))
+  # Create plot data frame - ensure same length vectors
+  plot_data <- data.frame(
+    Date = index(strategy_returns),  # Use strategy_returns index to ensure matching lengths
+    Equity = cumulative_equity_curve
+  )
+  # Create plot using ggplot2
+  equity_plot <- ggplot(plot_data, aes(x = Date, y = Equity)) +
+    geom_line(color = "blue") +
+    theme_minimal() +
+    labs(
+      title = paste("Cumulative Return from DVI Strategy -", ticker),
+      x = "Date",
+      y = "Cumulative Return"
+    )
+  # Print the plot
+  print(equity_plot)
+  # Return both summary results and the equity curve data
+  return(list(
+    summary = summary_results,
+    equity_curve = plot_data
+  ))
+}
+results <- base_level_backtest("JNJ", "2014-01-01", "2017-12-31", 0.5)
+print(results$summary)
+```
+
+
+## Function 2: Simulate Multiple Backtest Periods
+Now, we want to evaluate if this strategy is consistent over multiple time periods. As such, we're going to iterate on the prior function and build a new function that is going to be able to loop itself for multiple backtest periods. By doing so, we can determine how strong a strategy may be over different periods of time. 
+We will be providing similar inputs, but now we're going to introduce a "testing period" in which we can compare different periods.
+In our outputs, we'll see some graphs, but notably a bar chart and table. With these different outputs, we'll be able to visualize and view the values in which each period has changed. By having this information, we can determine at what points a strategy was most or least effective. 
+
+```{r}
+# Function to simulate multiple backtest periods
+simulate_multiple_backtests <- function(ticker, testing_period, date_range, dvi_threshold = 0.5) {
+  # Extract start and end years from date_range
+  start_year <- as.numeric(date_range[1])
+  end_year <- as.numeric(date_range[2])
+  # Create an empty list to store the results from each period
+  all_results <- list()
+  # Create a vector to store cumulative returns for plotting
+  cumulative_returns <- data.frame(
+    Period = character(),
+    Cumulative_Return = numeric(),
+    stringsAsFactors = FALSE
+  )
+  # Loop through each period in the range
+  for (start in seq(start_year, end_year - testing_period + 1)) {
+    end <- start + testing_period - 1
+    # Create date strings for the period
+    period_start <- paste0(start, "-01-01")
+    period_end <- paste0(end, "-12-31")
+    # Run backtest for this period
+    period_result <- base_level_backtest(ticker, period_start, period_end, dvi_threshold)
+    # Store the results in the list
+    all_results[[paste0(start, "-", end)]] <- period_result
+    # Store the cumulative return for this period
+    cumulative_returns <- rbind(
+      cumulative_returns,
+      data.frame(
+        Period = paste0(start, "-", end),
+        Cumulative_Return = period_result$summary$Total_Return,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+  # Create a data frame to store the summarized results
+  summary_df <- data.frame(
+    Period = character(),
+    Total_Return = numeric(),
+    Annualized_Sharpe = numeric(),
+    Max_Drawdown = numeric(),
+    stringsAsFactors = FALSE
+  )
+  # Populate summary data frame with results from each period
+  for (period in names(all_results)) {
+    result <- all_results[[period]]
+    summary_df <- rbind(
+      summary_df,
+      data.frame(
+        Period = period,
+        Total_Return = result$summary$Total_Return,
+        Annualized_Sharpe = result$summary$Annualized_Sharpe,
+        Max_Drawdown = result$summary$Max_Drawdown,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+  # Calculate the average of each metric over all periods
+  summary_means <- colMeans(summary_df[, -1], na.rm = TRUE)
+  summary_df <- rbind(
+    summary_df,
+    c("Average", summary_means)
+  )
+  # Create cumulative returns plot
+  plot_cumulative_return <- ggplot(cumulative_returns, aes(x = Period, y = Cumulative_Return)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    labs(
+      title = paste("Cumulative Returns by Period -", ticker),
+      subtitle = paste(testing_period, "Year Periods"),
+      x = "Period",
+      y = "Cumulative Return"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  # Print the plot
+  print(plot_cumulative_return)
+  # Return both summary statistics and plot data
+  return(list(
+    summary = summary_df,
+    plot_data = cumulative_returns,
+    all_results = all_results
+  ))
+}
+simulation_results <- simulate_multiple_backtests("JNJ", 3, c("2010", "2016"), 0.5)
+print(simulation_results$summary)
+```
+
+
+
+## Function 3: Simulate Multiple DVI Thresholds
+Now that we can calculate multiple time periods, we want to introduce a new step in which we can adjust our DVI thresholds. This function will now include all the prior values but now will let us input a low and high value for threshold, and increments to test in. 
+By doing so, this allows us to determine how effective different thresholds may be. 
+
+```{r}
+# Function to simulate multiple DVI thresholds
+simulate_multiple_dvi_thresholds <- function(ticker, start_date, end_date, low_threshold, 
+                                             high_threshold, increment = 0.01) {
+  # Create a sequence of DVI thresholds
+  dvi_thresholds <- seq(low_threshold, high_threshold, by = increment)
+  # Create empty data frame to store results
+  summary_df <- data.frame(
+    DVI_Threshold = numeric(),
+    Total_Return = numeric(),
+    Annualized_Sharpe = numeric(),
+    Max_Drawdown = numeric(),
+    stringsAsFactors = FALSE
+  )
+  # Loop through each threshold
+  for (threshold in dvi_thresholds) {
+    # Run backtest with current threshold
+    result <- base_level_backtest(ticker, start_date, end_date, threshold)
+    # Add results to summary data frame
+    summary_df <- rbind(
+      summary_df,
+      data.frame(
+        DVI_Threshold = threshold,
+        Total_Return = result$summary$Total_Return,
+        Annualized_Sharpe = result$summary$Annualized_Sharpe,
+        Max_Drawdown = result$summary$Max_Drawdown,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+  # Find optimal threshold based on Total Return
+  optimal_threshold <- summary_df$DVI_Threshold[which.max(summary_df$Total_Return)]
+  # Create plots for each metric
+  plot_return <- ggplot(summary_df, aes(x = DVI_Threshold, y = Total_Return)) +
+    geom_line(color = "steelblue", size = 1) +
+    geom_point(color = "red") +
+    geom_vline(xintercept = optimal_threshold, linetype = "dashed", color = "green") +
+    geom_text(aes(label = round(Total_Return, 4)), 
+              vjust = -0.5, color = "black", size = 3) +
+    labs(
+      title = paste("Performance Metrics vs DVI Threshold -", ticker),
+      subtitle = paste("Optimal Threshold:", round(optimal_threshold, 3)),
+      x = "DVI Threshold",
+      y = "Total Return"
+    ) +
+    theme_minimal()
+  plot_sharpe <- ggplot(summary_df, aes(x = DVI_Threshold, y = Annualized_Sharpe)) +
+    geom_line(color = "steelblue", size = 1) +
+    geom_point(color = "red") +
+    geom_vline(xintercept = optimal_threshold, linetype = "dashed", color = "green") +
+    labs(
+      title = "Sharpe Ratio vs DVI Threshold",
+      x = "DVI Threshold",
+      y = "Annualized Sharpe Ratio"
+    ) +
+    theme_minimal()
+  plot_drawdown <- ggplot(summary_df, aes(x = DVI_Threshold, y = Max_Drawdown)) +
+    geom_line(color = "steelblue", size = 1) +
+    geom_point(color = "red") +
+    geom_vline(xintercept = optimal_threshold, linetype = "dashed", color = "green") +
+    labs(
+      title = "Maximum Drawdown vs DVI Threshold",
+      x = "DVI Threshold",
+      y = "Maximum Drawdown"
+    ) +
+    theme_minimal()
+  # Arrange and print plots
+  print(plot_return)
+  print(plot_sharpe)
+  print(plot_drawdown)
+  # Return results
+  return(list(
+    summary = summary_df,
+    optimal_threshold = optimal_threshold,
+    plots = list(
+      return_plot = plot_return,
+      sharpe_plot = plot_sharpe,
+      drawdown_plot = plot_drawdown
+    )
+  ))
+}
+results <- simulate_multiple_dvi_thresholds(
+  ticker = "JNJ",
+  start_date = "2014-01-01",
+  end_date = "2017-12-31",
+  low_threshold = 0.3,
+  high_threshold = 0.7,
+  increment = 0.05
+)
+```
+
+# Conclusion
+
+In conclusion, a DVI-based trading strategy is more than just a measurement tool used by traders. This is a tool used to help curb decisions made through behaviors. This strategy provides signals for entering or exiting trades based on predetermined threshold markers. This helps traders make informed strategic decisions, that overcomes influence from behavioral biases such as herding and loss aversion.
+In volatile markets, emotional influence drives impulsive decisions, such as selling out of fear and panic, or following trends of mainstream media. Through the use of DVI, discipline is enforced focusing on volatility and directional trends. This helps to ensure traders are capitalizing on opportunities by signaling undervalued market conditions or overvalued selling periods for optimal profits. 
+In summary, the DVI-based strategy combines technical analysis with behavioral finance principles, providing a robust framework for disciplined and effective trading.
+
